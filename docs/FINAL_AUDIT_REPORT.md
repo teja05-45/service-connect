@@ -199,8 +199,8 @@ API health <http://localhost:3001/health>.
 
 - **Branch:** `main`
 - **Initial commit count:** 25 (preserved, no history rewritten, no force-push)
-- **Final commit count:** 66
-- **New commits for this assignment:** 41
+- **Final commit count:** 68
+- **New commits for this assignment:** 43 (these figures include the two documentation commits that record them)
 - **Working tree after commits:** clean
 
 ### Commit distribution
@@ -213,8 +213,8 @@ API health <http://localhost:3001/health>.
 | Frontend | 3 |
 | Testing | 2 |
 | Docker and DevOps | 7 |
-| Documentation | 3 |
-| **Total new commits** | **41** |
+| Documentation | 5 |
+| **Total new commits** | **43** |
 
 Every commit contains a real change to a specific file or coherent group of files, staged
 with an explicit pathspec. No commit is empty, and no file was committed multiple times
@@ -231,10 +231,10 @@ for the sake of volume.
 7. Docker and deployment: images, entrypoint, nginx, compose stack.
 8. Documentation: README, project audit, final report.
 
-### Why 41 rather than 50+
+### Why 43 rather than 50+
 
 The audit's actual change set is roughly 45 files representing one coherent piece of
-work; it was split into 41 runtime-, review- and deployment-scoped commits. Reaching an
+work; it was split into 43 runtime-, review- and deployment-scoped commits. Reaching an
 arbitrary higher number would have required either splitting single-file fixes into
 non-compiling intermediate states or adding whitespace/rename-only commits, both of which
 the brief explicitly forbids. The shortfall is reported here rather than manufactured.
