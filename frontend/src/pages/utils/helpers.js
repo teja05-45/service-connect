@@ -1,7 +1,11 @@
 // frontend/src/pages/utils/helpers.js
 
 // --- API Configuration ---
-export const API_BASE_URL = 'http://localhost:3001/api/v1';
+// Configurable at build time - Create React App inlines REACT_APP_* variables.
+// Falls back to the local backend so `npm start` works without a .env file.
+const configuredApiBaseUrl =
+    process.env.REACT_APP_API_BASE_URL || 'http://localhost:3001/api/v1';
+export const API_BASE_URL = configuredApiBaseUrl.replace(/\/+$/, '');
 
 export const CURRENCY_SYMBOL = '₹'; // Indian Rupees
 // Mock UPI QR Code URL for deposit - Admin's Account
