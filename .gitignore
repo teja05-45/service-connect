@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment files (never commit real secrets)
+.env
+.env.*
+!.env.example
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Build output
+frontend/build/
+frontend/coverage/
+
+# Runtime uploads (user content, not source)
+server/uploads/*
+!server/uploads/.gitkeep
+
+# Logs / OS noise
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Local scratch (schema extraction helpers etc.)
+tmp_schema/
