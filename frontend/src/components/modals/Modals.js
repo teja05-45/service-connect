@@ -235,6 +235,11 @@ export const ReviewAndPaymentModal = ({ booking, onClose, onCompleted }) => {
             setLoading(false);
             return;
         }
+        if (!rating) {
+            setError('Please choose a rating between 1 and 5 stars.');
+            setLoading(false);
+            return;
+        }
 
         try {
             const response = await fetch(`${API_BASE_URL}/reviews`, {
@@ -312,7 +317,7 @@ export const ReviewAndPaymentModal = ({ booking, onClose, onCompleted }) => {
                             <label htmlFor="comment" className="block text-sm font-semibold text-gray-700">Comment (Optional)</label>
                             <textarea id="comment" name="comment" rows="3" value={comment} onChange={(e) => setComment(e.target.value)} className="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-lg" placeholder="Share your experience..."></textarea>
                         </div>
-                        <button type="submit" disabled={loading} className="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition disabled:bg-gray-400">
+                        <button type="submit" disabled={loading || rating < 1} className="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition disabled:bg-gray-400">
                             {loading ? 'Submitting...' : 'Submit Review (Optional)'}
                         </button>
                     </form>
