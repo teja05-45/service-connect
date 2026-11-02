@@ -1,0 +1,105 @@
+name: service-connect
+
+# ---------------------------------------------------------------------------
+# Full stack: PostgreSQL + Express API + React (nginx)
+#   docker compose up --build
+# ---------------------------------------------------------------------------
+
+services:
+  db:
+    image: postgres:18-alpine
+    container_name: service-connect-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-service_connect}
+      POSTGRES_USER: ${POSTGRES_USER:-service_connect}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    ports:
+      # Host port defaults to 5433 to avoid clashing with a local PostgreSQL.
+      - "${DB_PORT:-5433}:5432"
+    volumes:
+      # PostgreSQL 18 images keep PGDATA in a versioned subdirectory, so the
+      # volume must be mounted at /var/lib/postgresql (not .../data).
+      - db_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - service-connect-net
+
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: service-connect-backend
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PORT: 3001
+      HOST: 0.0.0.0
+      # Service name "db" is the internal DNS name - never localhost here.
+      PG_HOST: db
+      PG_PORT: 5432
+      PG_USER: ${POSTGRES_USER:-service_connect}
+      PG_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      PG_DATABASE: ${POSTGRES_DB:-service_connect}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      EMAIL_USER: ${EMAIL_USER:-}
+      EMAIL_PASS: ${EMAIL_PASS:-}
+      EMAIL_SENDER_NAME: ${EMAIL_SENDER_NAME:-Service Connect}
+      # Browser-visible origin for uploaded files (internal host is not routable).
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3001}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      UPLOAD_DIR: /app/uploads
+      SEED: ${SEED:-true}
+    ports:
+      - "${BACKEND_PORT:-3001}:3001"
+    volumes:
+      - uploads_data:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 25s
+    restart: unless-stopped
+    networks:
+      - service-connect-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Must be reachable from the browser, not from inside the Docker network.
+        REACT_APP_API_BASE_URL: ${REACT_APP_API_BASE_URL:-http://localhost:3001/api/v1}
+    container_name: service-connect-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - service-connect-net
+
+volumes:
+  db_data:
+  uploads_data:
+
+networks:
+  service-connect-net:
+    driver: bridge
