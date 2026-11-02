@@ -36,7 +36,7 @@ router.get('/services', async (req, res) => {
  */
 router.get('/providers', async (req, res) => {
     const { service_id, lat, lon, sort_by } = req.query;
-    
+
     // Allow fetching without specific location for top_rated on homepage, but recommend location for actual search
     if (!service_id && sort_by !== 'top_rated') {
          return res.status(400).json({ error: 'Service ID or sort_by=top_rated is required.' });
@@ -44,16 +44,16 @@ router.get('/providers', async (req, res) => {
 
     const customerLat = parseFloat(lat || 0);
     const customerLon = parseFloat(lon || 0);
-    
+
     // Check if lat/lon were explicitly provided or are non-zero (indicating a specific search intent)
-    const isLocationProvided = !!lat && !!lon && (customerLat !== 0 || customerLon !== 0); 
-    
+    const isLocationProvided = !!lat && !!lon && (customerLat !== 0 || customerLon !== 0);
+
     try {
         let query = `
-            SELECT 
+            SELECT
                 p.id, p.display_name, p.is_verified, p.average_rating, p.review_count,
                 p.location_lat, p.location_lon, p.service_radius_km,
-                u.profile_picture_url, 
+                u.profile_picture_url,
                 s.name AS service_name,
                 s.id AS service_id
             FROM providers p
@@ -84,15 +84,15 @@ router.get('/providers', async (req, res) => {
         const filteredProviders = result.rows.map(provider => {
             const providerLat = parseFloat(provider.location_lat || 0);
             const providerLon = parseFloat(provider.location_lon || 0);
-            
+
             // Only calculate distance if a location is provided
             const distance = isLocationProvided ? calculateDistance(
-                customerLat, 
-                customerLon, 
-                providerLat, 
+                customerLat,
+                customerLon,
+                providerLat,
                 providerLon
-            ) : null; 
-            
+            ) : null;
+
             return {
                 ...provider,
                 distance_km: distance !== null ? Math.round(distance * 10) / 10 : null
@@ -100,10 +100,10 @@ router.get('/providers', async (req, res) => {
         }).filter(provider => {
             // FILTER LOGIC:
             // 1. If fetching top rated, include all.
-            if (sort_by === 'top_rated') return true; 
-            
+            if (sort_by === 'top_rated') return true;
+
             // 2. If a location was NOT provided, include all (no distance filter).
-            if (!isLocationProvided) return true; 
+            if (!isLocationProvided) return true;
 
             // 3. If a location WAS provided, apply the radius filter.
             return provider.distance_km !== null && provider.distance_km <= provider.service_radius_km;
@@ -117,7 +117,7 @@ router.get('/providers', async (req, res) => {
             if (sort_by === 'top_rated') {
                  return b.average_rating - a.average_rating;
             }
-            return 0; 
+            return 0;
         });
 
         // Limit top-rated results to 5 for homepage display if requested
@@ -147,7 +147,7 @@ router.post('/contact-us', async (req, res) => {
     if (!name || !email || !problem_description) {
         return res.status(400).json({ error: 'Name, email, and a description are required.' });
     }
-    
+
     try {
         // Assumes a 'contact_messages' table exists for admin view
         const result = await pool.query(

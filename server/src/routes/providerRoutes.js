@@ -3,11 +3,11 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
-const auth = require('../../middleware/auth'); 
+const auth = require('../../middleware/auth');
 
-// NOTE: sendEmail is not strictly needed for the routes below but is included 
+// NOTE: sendEmail is not strictly needed for the routes below but is included
 // for consistency if future routes require it.
-const { sendEmail } = require('../config/nodemailer'); 
+const { sendEmail } = require('../config/nodemailer');
 
 /**
  * @route GET /api/v1/provider/earnings
@@ -22,7 +22,7 @@ router.get('/provider/earnings', auth, async (req, res) => {
 
     try {
         const analyticsQuery = `
-            SELECT 
+            SELECT
                 w.balance AS wallet_balance,
                 p.average_rating,
                 p.review_count,
@@ -33,19 +33,19 @@ router.get('/provider/earnings', auth, async (req, res) => {
             JOIN providers p ON u.id = p.user_id
             LEFT JOIN wallets w ON w.user_id = u.id
             LEFT JOIN bookings b ON b.provider_id = p.id
-            LEFT JOIN transactions t ON t.user_id = u.id 
+            LEFT JOIN transactions t ON t.user_id = u.id
             WHERE u.id = $1
             GROUP BY w.balance, p.average_rating, p.review_count;
         `;
-        
+
         const result = await pool.query(analyticsQuery, [user_id]);
-        
+
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Provider analytics not found.' });
         }
-        
+
         const row = result.rows[0];
-        
+
         res.status(200).json({
             message: 'Provider analytics retrieved successfully.',
             analytics: {
@@ -74,7 +74,7 @@ router.get('/provider/profile', auth, async (req, res) => {
     if (role !== 'provider') {
         return res.status(403).json({ error: 'Access denied. Only providers can view profiles.' });
     }
-    
+
     try {
         // FIX: Corrected column name to profile_picture_url
         const profileQuery = `
@@ -86,16 +86,16 @@ router.get('/provider/profile', auth, async (req, res) => {
             GROUP BY p.id, u.profile_picture_url;
         `;
         const result = await pool.query(profileQuery, [user_id]);
-        
+
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Provider profile not found. Complete setup first.' });
         }
-        
+
         const profile = result.rows[0];
         profile.service_ids = Array.isArray(profile.service_ids) ? profile.service_ids.filter(id => id !== null) : [];
 
-        res.status(200).json({ 
-            message: 'Provider profile retrieved successfully.', 
+        res.status(200).json({
+            message: 'Provider profile retrieved successfully.',
             provider_profile: profile
         });
 
@@ -131,10 +131,10 @@ router.post('/provider/profile', auth, async (req, res) => {
 
     try {
         await client.query('BEGIN');
-        
+
         let updateFields = 'display_name = $1, bio = $2, location_lat = $3, location_lon = $4, service_radius_km = $5, updated_at = CURRENT_TIMESTAMP';
         let updateParams = [display_name, bio, location_lat, location_lon, service_radius_km];
-        
+
         if (payout_upi_id !== undefined) {
              updateFields += `, payout_upi_id = $${updateParams.length + 1}`;
              updateParams.push(payout_upi_id);
@@ -157,21 +157,21 @@ router.post('/provider/profile', auth, async (req, res) => {
 
         await client.query('DELETE FROM provider_services WHERE provider_id = $1', [provider_id]);
 
-        const serviceInserts = service_ids.map(service_id => 
+        const serviceInserts = service_ids.map(service_id =>
             client.query('INSERT INTO provider_services (provider_id, service_id) VALUES ($1, $2)', [provider_id, service_id])
         );
         await Promise.all(serviceInserts);
 
         await client.query('COMMIT');
 
-        res.status(200).json({ 
-            message: 'Provider profile updated successfully.', 
-            provider_id: provider_id 
+        res.status(200).json({
+            message: 'Provider profile updated successfully.',
+            provider_id: provider_id
         });
 
     } catch (err) {
         await client.query('ROLLBACK');
-        console.error('Provider profile update error (Details):', err); 
+        console.error('Provider profile update error (Details):', err);
         res.status(500).json({ error: 'An error occurred during profile update.' });
     } finally {
         client.release();
@@ -198,7 +198,7 @@ router.get('/provider/bookings', auth, async (req, res) => {
         const provider_id = providerResult.rows[0].id;
 
         const bookingsQuery = `
-            SELECT 
+            SELECT
                 b.id, b.scheduled_at, b.address, b.customer_notes, b.booking_status, b.amount, b.service_description,
                 u.email AS customer_email, u.profile_picture_url AS customer_photo, s.name AS service_name, b.customer_id
             FROM bookings b
@@ -213,7 +213,7 @@ router.get('/provider/bookings', auth, async (req, res) => {
             message: `${result.rows.length} bookings retrieved.`,
             bookings: result.rows
         });
-        
+
     } catch (err) {
         console.error('Provider bookings fetch error:', err);
         res.status(500).json({ error: 'An error occurred while fetching provider bookings.' });
@@ -239,12 +239,12 @@ router.post('/provider/wallet/withdraw-request', auth, async (req, res) => {
     if (!transaction_reference) {
          return res.status(400).json({ error: 'UPI ID or Bank Details are required for withdrawal.' });
     }
-    
+
     const client = await pool.connect();
 
     try {
         await client.query('BEGIN');
-        
+
         // 1. Check if balance is sufficient (FOR UPDATE to lock row)
         const walletResult = await client.query('SELECT balance FROM wallets WHERE user_id = $1 FOR UPDATE', [user_id]);
         const currentBalance = parseFloat(walletResult.rows[0]?.balance || 0);
@@ -253,21 +253,21 @@ router.post('/provider/wallet/withdraw-request', auth, async (req, res) => {
             await client.query('ROLLBACK');
             return res.status(400).json({ error: 'Insufficient wallet balance for withdrawal request.' });
         }
-        
+
         // 2. Insert withdrawal request
         const result = await client.query(
             'INSERT INTO wallet_requests (user_id, type, amount, transaction_reference) VALUES ($1, $2, $3, $4) RETURNING id',
             [user_id, 'withdrawal', amount, transaction_reference]
         );
-        
+
         await client.query('COMMIT');
-        
+
         // Notify admin via email (optional in mock, but good practice)
         console.log(`NEW WITHDRAWAL REQUEST: User ${user_id} for ${amount}. Request ID: ${result.rows[0].id}`);
 
-        res.status(201).json({ 
+        res.status(201).json({
             message: 'Withdrawal request submitted for admin approval.',
-            request_id: result.rows[0].id 
+            request_id: result.rows[0].id
         });
 
     } catch (err) {
