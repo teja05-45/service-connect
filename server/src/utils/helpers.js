@@ -17,4 +17,23 @@ const generateOtp = () => {
     return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-module.exports = { calculateDistance, generateOtp };
+// Basic email shape validation (the DB column is 255 chars).
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const isValidEmail = (value) =>
+    typeof value === 'string' && value.length <= 255 && EMAIL_PATTERN.test(value.trim());
+
+/**
+ * Build the publicly reachable URL for an uploaded file.
+ *
+ * Inside Docker the request host is the internal service name (e.g.
+ * "backend:3001") which a browser cannot resolve. PUBLIC_BASE_URL overrides it
+ * with the host-visible origin; without it we fall back to the request origin,
+ * which is correct for plain local development.
+ */
+const buildFileUrl = (req, filename) => {
+    const configuredBase = (process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+    const base = configuredBase || `${req.protocol}://${req.get('host')}`;
+    return `${base}/uploads/${filename}`;
+};
+
+module.exports = { calculateDistance, generateOtp, isValidEmail, buildFileUrl };
