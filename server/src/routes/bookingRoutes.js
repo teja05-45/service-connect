@@ -3,38 +3,18 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
-const auth = require('../../middleware/auth'); 
-const { sendEmail } = require('../config/nodemailer'); 
-const multer = require('multer'); 
-const path = require('path'); 
+const auth = require('../../middleware/auth');
+const { sendEmail } = require('../config/nodemailer');
+const { createUploader, imageOrPdf } = require('../config/upload');
+const { buildFileUrl } = require('../utils/helpers');
 
-
-// --- DEDICATED FILE UPLOAD CONFIGURATION FOR MESSAGES ---
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, 'uploads/');
-    },
-    filename: function (req, file, cb) {
-        const userId = req.user?.id || 'public'; 
-        const ext = path.extname(file.originalname);
-        cb(null, `${userId}-${Date.now()}-msg${ext}`);
-    }
+// Shared uploader (destination, 5 MB limit and mime whitelist live in config/upload.js)
+const upload = createUploader({
+    prefix: 'msg',
+    allowed: imageOrPdf,
+    rejectionMessage: 'Only images and PDF files are allowed for messages!',
 });
 
-const upload = multer({ 
-    storage: storage,
-    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
-    fileFilter: (req, file, cb) => {
-        // Check mime type for security (Images/PDFs for messages)
-        if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
-            cb(null, true);
-        } else {
-            cb(null, false);
-            return cb(new Error('Only images and PDF files are allowed for messages!'));
-        }
-    }
-});
-// -----------------------------------------------------------
 
 
 /**
@@ -47,13 +27,13 @@ router.post('/bookings', auth, async (req, res) => {
     if (role !== 'customer') {
         return res.status(403).json({ msg: 'Access denied. Only customers can create bookings.' });
     }
-    
+
     const { provider_id, service_id, scheduled_at, address, customer_notes, service_description } = req.body;
-    
+
     if (!provider_id || !service_id || !scheduled_at || !address || !service_description) {
         return res.status(400).json({ error: 'Provider ID, Service ID, scheduled time, address, and description are required.' });
     }
-    
+
     try {
         // Retrieve provider email, display name, and service name for notification
         const providerInfoResult = await pool.query(
@@ -65,16 +45,16 @@ router.post('/bookings', auth, async (req, res) => {
         if (!providerInfo) {
             return res.status(404).json({ error: 'Provider or service information not found.' });
         }
-        
+
         // Insert booking (status is pending_provider)
         const bookingInsert = await pool.query(
-            `INSERT INTO bookings (customer_id, provider_id, service_id, scheduled_at, address, customer_notes, service_description, booking_status) 
+            `INSERT INTO bookings (customer_id, provider_id, service_id, scheduled_at, address, customer_notes, service_description, booking_status)
              VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending_provider') RETURNING id`,
             [customer_user_id, provider_id, service_id, scheduled_at, address, customer_notes, service_description]
         );
 
         const booking_id = bookingInsert.rows[0].id;
-        
+
         // --- REAL EMAIL SENDING: New Booking Request to Provider ---
         const emailBody = `
             <h2>New Booking Request - ${providerInfo.service_name} (ID: ${booking_id})</h2>
@@ -94,11 +74,11 @@ router.post('/bookings', auth, async (req, res) => {
             emailBody
         );
 
-        res.status(201).json({ 
-            message: 'Booking request sent successfully to provider.', 
-            booking_id: booking_id 
+        res.status(201).json({
+            message: 'Booking request sent successfully to provider.',
+            booking_id: booking_id
         });
-        
+
     } catch (err) {
         console.error('Booking creation error:', err);
         res.status(500).json({ error: 'An error occurred during booking creation.' });
@@ -118,25 +98,25 @@ router.put('/bookings/:id', auth, async (req, res) => {
     if (role !== 'provider') {
         return res.status(403).json({ msg: 'Access denied. Only providers can update booking status.' });
     }
-    
+
     // FIX: Updated validStatuses to contain client-side triggers (rejected, completed, closed, accepted)
-    const validStatuses = ['accepted', 'rejected', 'completed', 'closed']; 
+    const validStatuses = ['accepted', 'rejected', 'completed', 'closed'];
     if (!validStatuses.includes(status)) {
         return res.status(400).json({ error: 'Invalid status update provided.' });
     }
 
     const client = await pool.connect();
-    
+
     try {
         await client.query('BEGIN');
-        
+
         const providerResult = await client.query('SELECT id FROM providers WHERE user_id = $1', [provider_user_id]);
-        
+
         if (providerResult.rows.length === 0) {
              await client.query('ROLLBACK');
              return res.status(404).json({ error: 'Provider profile not found for this logged-in user.' });
         }
-        
+
         const provider_id = providerResult.rows[0].id;
         let customer_user_id;
         let updateQuery;
@@ -150,7 +130,7 @@ router.put('/bookings/:id', auth, async (req, res) => {
                 await client.query('ROLLBACK');
                 return res.status(400).json({ error: 'Amount is required and must be positive when accepting a service.' });
             }
-            
+
             nextStatus = 'awaiting_customer_confirmation';
             updateQuery = `
                 UPDATE bookings
@@ -159,7 +139,7 @@ router.put('/bookings/:id', auth, async (req, res) => {
                 RETURNING customer_id, booking_status, amount;
             `;
             queryParams = [booking_id, provider_id, nextStatus, amount];
-            
+
         } else if (status === 'rejected' || status === 'completed' || status === 'closed') {
             // Simple status update
             updateQuery = `
@@ -181,18 +161,18 @@ router.put('/bookings/:id', auth, async (req, res) => {
             await client.query('ROLLBACK');
             return res.status(404).json({ error: 'Booking not found or not owned by this provider.' });
         }
-        
+
         customer_user_id = result.rows[0].customer_id;
-        
+
         // Retrieve customer email for notification
         const customerEmailResult = await client.query('SELECT email FROM users WHERE id = $1', [customer_user_id]);
         const customerEmail = customerEmailResult.rows[0]?.email;
-        
+
         // --- REAL EMAIL SENDING: Notification to Customer ---
         if (customerEmail) {
             let subject = `Service Connect Booking Update: ${nextStatus.toUpperCase()}`;
             let emailBody = `<p>Your booking (ID: ${booking_id}) status has been updated to <strong>${nextStatus}</strong>.</p>`;
-            
+
             if (nextStatus === 'awaiting_customer_confirmation') {
                 subject = `Service Connect: Price Quote Received for Booking ${booking_id}`;
                 emailBody = `
@@ -218,7 +198,7 @@ router.put('/bookings/:id', auth, async (req, res) => {
 
             await sendEmail(customerEmail, subject, emailBody);
         }
-        
+
         await client.query('COMMIT');
 
         res.status(200).json({
@@ -254,10 +234,10 @@ router.put('/bookings/:id/confirm-price', auth, async (req, res) => {
     }
 
     const client = await pool.connect();
-    
+
     try {
         await client.query('BEGIN');
-        
+
         let newStatus;
         let subject;
         let message;
@@ -284,13 +264,13 @@ router.put('/bookings/:id/confirm-price', auth, async (req, res) => {
             await client.query('ROLLBACK');
             return res.status(400).json({ error: 'Booking not found, not owned by you, or status is incorrect.' });
         }
-        
+
         const provider_id = result.rows[0].provider_id;
-        
+
         // Retrieve provider email for notification
         const providerEmailResult = await client.query('SELECT u.email FROM providers p JOIN users u ON p.user_id = u.id WHERE p.id = $1', [provider_id]);
         const providerEmail = providerEmailResult.rows[0]?.email;
-        
+
         // Notify provider
         if (providerEmail) {
             const emailBody = `
@@ -300,7 +280,7 @@ router.put('/bookings/:id/confirm-price', auth, async (req, res) => {
             `;
             await sendEmail(providerEmail, subject, emailBody);
         }
-        
+
         await client.query('COMMIT');
 
         res.status(200).json({
@@ -336,7 +316,7 @@ router.get('/bookings/:id/messages', auth, async (req, res) => {
         if (bookingResult.rows.length === 0) {
             return res.status(403).json({ error: 'Access denied. You are not a party to this booking.' });
         }
-        
+
         const messagesQuery = `
             SELECT m.id, m.sender_id, m.content, m.created_at, m.file_url, u.email AS sender_email
             FROM messages m
@@ -346,9 +326,9 @@ router.get('/bookings/:id/messages', auth, async (req, res) => {
         `;
         const messagesResult = await pool.query(messagesQuery, [booking_id]);
 
-        res.status(200).json({ 
+        res.status(200).json({
             message: `${messagesResult.rows.length} messages retrieved.`,
-            messages: messagesResult.rows 
+            messages: messagesResult.rows
         });
 
     } catch (err) {
@@ -383,7 +363,7 @@ router.post('/bookings/:id/messages', auth, async (req, res) => {
         }
 
         const booking = bookingResult.rows[0];
-        
+
         // Determine recipient ID
         let recipient_id;
         if (sender_id === booking.customer_id) {
@@ -395,15 +375,15 @@ router.post('/bookings/:id/messages', auth, async (req, res) => {
         if (!recipient_id) {
             return res.status(404).json({ error: 'Recipient user ID could not be determined.' });
         }
-        
+
         const messageInsert = await pool.query(
             // is_read defaults to FALSE
             'INSERT INTO messages (booking_id, sender_id, recipient_id, content) VALUES ($1, $2, $3, $4) RETURNING id, created_at',
             [booking_id, sender_id, recipient_id, content]
         );
 
-        res.status(201).json({ 
-            message: 'Message sent successfully.', 
+        res.status(201).json({
+            message: 'Message sent successfully.',
             message_id: messageInsert.rows[0].id,
             created_at: messageInsert.rows[0].created_at
         });
@@ -434,9 +414,9 @@ router.post('/bookings/:id/messages/upload', auth, (req, res, next) => {
         if (!file) {
             return res.status(400).json({ error: 'File attachment is required.' });
         }
-        
+
         // FIX: Use actual server path for file access
-        const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${file.filename}`;
+        const fileUrl = `${buildFileUrl(req, file.filename)}`;
         const content = `File uploaded: ${file.originalname}`;
 
         try {
@@ -450,7 +430,7 @@ router.post('/bookings/:id/messages/upload', auth, (req, res, next) => {
             }
 
             const booking = bookingResult.rows[0];
-            
+
             // Determine recipient ID
             let recipient_id;
             if (sender_id === booking.customer_id) {
@@ -462,15 +442,15 @@ router.post('/bookings/:id/messages/upload', auth, (req, res, next) => {
             if (!recipient_id) {
                 return res.status(404).json({ error: 'Recipient user ID could not be determined.' });
             }
-            
+
             const messageInsert = await pool.query(
                 // is_read defaults to FALSE
                 'INSERT INTO messages (booking_id, sender_id, recipient_id, content, file_url) VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at',
                 [booking_id, sender_id, recipient_id, content, fileUrl]
             );
 
-            res.status(201).json({ 
-                message: 'File sent successfully.', 
+            res.status(201).json({
+                message: 'File sent successfully.',
                 message_id: messageInsert.rows[0].id,
                 created_at: messageInsert.rows[0].created_at,
                 file_url: fileUrl
