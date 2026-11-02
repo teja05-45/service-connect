@@ -194,3 +194,47 @@ API health <http://localhost:3001/health>.
 | Docker Build | PASS | `service-connect-backend` and `service-connect-frontend` images built |
 | Docker Compose | PASS | Config validates; all three services healthy; volumes retained |
 | README | PASS | Root README documents both run paths, API, DB, Docker and troubleshooting; commands match the implementation |
+
+## Git workflow
+
+- **Branch:** `main`
+- **Initial commit count:** 25 (preserved, no history rewritten, no force-push)
+- **Final commit count:** 66
+- **New commits for this assignment:** 41
+- **Working tree after commits:** clean
+
+### Commit distribution
+
+| Category | Commits |
+|---|---:|
+| Project setup, repo hygiene and configuration | 8 |
+| Database and migrations | 4 |
+| Backend (config, middleware, routes, server) | 14 |
+| Frontend | 3 |
+| Testing | 2 |
+| Docker and DevOps | 7 |
+| Documentation | 3 |
+| **Total new commits** | **41** |
+
+Every commit contains a real change to a specific file or coherent group of files, staged
+with an explicit pathspec. No commit is empty, and no file was committed multiple times
+for the sake of volume.
+
+### Milestones
+
+1. Repository hygiene: ignore rules, secret untracking, stray-file removal, env templates.
+2. Configuration: npm scripts, database pool and email configuration.
+3. Database: idempotent schema, seed, migration runner, readiness gate.
+4. Backend: shared uploads, structured logging, rate limiting, route fixes, health/errors.
+5. Frontend: configurable API origin, review rating guard, test script.
+6. Testing: backend and frontend unit suites.
+7. Docker and deployment: images, entrypoint, nginx, compose stack.
+8. Documentation: README, project audit, final report.
+
+### Why 41 rather than 50+
+
+The audit's actual change set is roughly 45 files representing one coherent piece of
+work; it was split into 41 runtime-, review- and deployment-scoped commits. Reaching an
+arbitrary higher number would have required either splitting single-file fixes into
+non-compiling intermediate states or adding whitespace/rename-only commits, both of which
+the brief explicitly forbids. The shortfall is reported here rather than manufactured.
