@@ -18,7 +18,9 @@ const isAdmin = (req, res, next) => {
 
 // 1. Apply the auth middleware and the isAdmin check to ALL requests coming through this router.
 // This is the cleanest way to secure all admin endpoints.
-router.use(auth, isAdmin); 
+// Scope the guard to /admin/* only. Mounting it router-wide at /api/v1 also
+// intercepted unknown API paths, turning 404s into 401s.
+router.use('/admin', auth, isAdmin);
 
 
 /**
@@ -31,7 +33,7 @@ router.get('/admin/overview-metrics', async (req, res) => {
         const totalUsers = await pool.query('SELECT COUNT(id) FROM users');
         const totalBookings = await pool.query('SELECT COUNT(id) FROM bookings');
         const pendingVerification = await pool.query('SELECT COUNT(id) FROM providers WHERE is_verified = FALSE');
-        
+
         // FIX: Fetch counts of pending wallet requests (Deposit and Withdrawal)
         const pendingDeposits = await pool.query("SELECT COUNT(id) FROM wallet_requests WHERE status = 'pending' AND type = 'deposit'");
         const pendingWithdrawals = await pool.query("SELECT COUNT(id) FROM wallet_requests WHERE status = 'pending' AND type = 'withdrawal'");
@@ -77,15 +79,15 @@ router.get('/admin/contact-messages', async (req, res) => {
 router.get('/admin/wallet-requests', async (req, res) => {
     try {
         const query = `
-            SELECT 
-                wr.id, 
+            SELECT
+                wr.id,
                 wr.user_id,
-                wr.type, 
-                wr.amount, 
-                wr.transaction_reference, 
+                wr.type,
+                wr.amount,
+                wr.transaction_reference,
                 wr.screenshot_url,
-                wr.requested_at, 
-                u.email, 
+                wr.requested_at,
+                u.email,
                 u.role,
                 wr.status
             FROM wallet_requests wr
@@ -130,12 +132,18 @@ router.put('/admin/wallet-requests/:id/approve', async (req, res) => {
         const adjustment = type === 'deposit' ? amount : -amount;
         const txnType = type === 'deposit' ? 'deposit_admin_approved' : 'withdrawal_sent';
 
-        // 2. Update wallet balance
+        // 2. Make sure a wallet row exists (older accounts may not have one),
+        // then update the balance.
+        await client.query(
+            'INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING',
+            [user_id]
+        );
+
         const walletUpdate = await client.query(
             'UPDATE wallets SET balance = balance + $1 WHERE user_id = $2 RETURNING balance',
             [adjustment, user_id]
         );
-        
+
         // Safety check for withdrawal to prevent negative balance if balance changed externally
         if (type === 'withdrawal' && walletUpdate.rows[0].balance < 0) {
             await client.query('ROLLBACK');
@@ -156,7 +164,7 @@ router.put('/admin/wallet-requests/:id/approve', async (req, res) => {
         );
 
         await client.query('COMMIT');
-        
+
         res.status(200).json({
             message: `${type.toUpperCase()} request #${request_id} approved. Balance updated.`,
             new_balance: parseFloat(walletUpdate.rows[0].balance)
@@ -213,11 +221,11 @@ router.get('/admin/users', async (req, res) => {
 router.get('/admin/providers', async (req, res) => {
     try {
         const pgQuery = `
-            SELECT 
-                p.id AS id, 
-                p.display_name, 
-                p.is_verified, 
-                p.average_rating, 
+            SELECT
+                p.id AS id,
+                p.display_name,
+                p.is_verified,
+                p.average_rating,
                 p.review_count,
                 u.email,
                 u.profile_picture_url,
@@ -240,11 +248,11 @@ router.get('/admin/providers', async (req, res) => {
 router.get('/admin/bookings', async (req, res) => {
     try {
         const query = `
-            SELECT 
-                b.id, 
-                p.display_name AS provider_name, 
+            SELECT
+                b.id,
+                p.display_name AS provider_name,
                 u.email AS customer_email,
-                b.scheduled_at, 
+                b.scheduled_at,
                 b.booking_status,
                 b.created_at
             FROM bookings b
