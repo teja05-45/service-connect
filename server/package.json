@@ -3,7 +3,14 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "migrate": "node scripts/migrate.js",
+    "wait-for-db": "node scripts/wait-for-db.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "keywords": [],
   "author": "",
