@@ -7,6 +7,7 @@ const auth = require('../../middleware/auth');
 const { sendEmail } = require('../config/nodemailer');
 const { createUploader, imageOrPdf } = require('../config/upload');
 const { buildFileUrl } = require('../utils/helpers');
+const { recordBookingStatus } = require('../services/bookingHistory');
 
 // Shared uploader (destination, 5 MB limit and mime whitelist live in config/upload.js)
 const upload = createUploader({
@@ -54,6 +55,14 @@ router.post('/bookings', auth, async (req, res) => {
         );
 
         const booking_id = bookingInsert.rows[0].id;
+
+        await recordBookingStatus(pool, {
+            bookingId: booking_id,
+            status: 'pending_provider',
+            changedBy: customer_user_id,
+            changedByRole: 'customer',
+            note: 'Booking requested by customer.',
+        });
 
         // --- REAL EMAIL SENDING: New Booking Request to Provider ---
         const emailBody = `
@@ -164,6 +173,14 @@ router.put('/bookings/:id', auth, async (req, res) => {
 
         customer_user_id = result.rows[0].customer_id;
 
+        await recordBookingStatus(client, {
+            bookingId: booking_id,
+            status: nextStatus,
+            changedBy: provider_user_id,
+            changedByRole: 'provider',
+            note: amount ? `Provider quoted ${amount}.` : 'Booking status updated by provider.',
+        });
+
         // Retrieve customer email for notification
         const customerEmailResult = await client.query('SELECT email FROM users WHERE id = $1', [customer_user_id]);
         const customerEmail = customerEmailResult.rows[0]?.email;
@@ -266,6 +283,14 @@ router.put('/bookings/:id/confirm-price', auth, async (req, res) => {
         }
 
         const provider_id = result.rows[0].provider_id;
+
+        await recordBookingStatus(client, {
+            bookingId: booking_id,
+            status: newStatus,
+            changedBy: customer_user_id,
+            changedByRole: 'customer',
+            note: accepted ? 'Customer accepted the quoted price.' : 'Customer rejected the quoted price.',
+        });
 
         // Retrieve provider email for notification
         const providerEmailResult = await client.query('SELECT u.email FROM providers p JOIN users u ON p.user_id = u.id WHERE p.id = $1', [provider_id]);

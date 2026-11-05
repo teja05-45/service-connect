@@ -5,6 +5,7 @@ const router = express.Router();
 const pool = require('../config/db');
 const auth = require('../../middleware/auth');
 const { sendEmail } = require('../config/nodemailer');
+const { recordBookingStatus } = require('../services/bookingHistory');
 
 /**
  * @route POST /api/v1/payments
@@ -104,6 +105,13 @@ router.post('/payments', auth, async (req, res) => {
             `UPDATE bookings SET booking_status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
             [booking_id]
         );
+        await recordBookingStatus(client, {
+            bookingId: booking_id,
+            status: 'closed',
+            changedBy: customer_user_id,
+            changedByRole: 'customer',
+            note: 'Payment captured from wallet.',
+        });
 
         await client.query('COMMIT');
 
@@ -173,8 +181,10 @@ router.post('/reviews', auth, async (req, res) => {
 
         // 3. Recalculate Provider Rating (only include reviews with rating > 0)
         const aggregateResult = await client.query(
-            `SELECT CAST(AVG(rating) FILTER (WHERE rating > 0) AS DECIMAL(3, 2)) AS avg_rating, COUNT(id) FILTER (WHERE rating > 0) AS review_count
-             FROM reviews WHERE provider_id = $1`,
+            `SELECT CAST(AVG(rating) FILTER (WHERE rating > 0) AS DECIMAL(3, 2)) AS avg_rating,
+                    COUNT(id) FILTER (WHERE rating > 0) AS review_count
+             FROM reviews
+             WHERE provider_id = $1 AND is_hidden = FALSE`,
             [booking.provider_id]
         );
         const { avg_rating, review_count } = aggregateResult.rows[0];

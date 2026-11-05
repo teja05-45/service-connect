@@ -7,6 +7,7 @@ const pool = require('../config/db');
 const auth = require('../../middleware/auth');
 const { createUploader, imageOrPdf } = require('../config/upload');
 const { buildFileUrl } = require('../utils/helpers');
+const { isValidLatitude, isValidLongitude } = require('../utils/geo');
 
 // Shared uploader (destination, 5 MB limit and mime whitelist live in config/upload.js)
 const upload = createUploader({
@@ -28,7 +29,10 @@ router.get('/user/profile', auth, async (req, res) => {
 
     try {
         // FIX: Corrected column name to profile_picture_url
-        const userResult = await pool.query('SELECT id, email, role, created_at, profile_picture_url FROM users WHERE id = $1', [user_id]);
+        const userResult = await pool.query(
+            'SELECT id, email, role, status, created_at, email_verified_at, profile_picture_url FROM users WHERE id = $1',
+            [user_id]
+        );
         const user = userResult.rows[0];
 
         if (!user) {
@@ -70,8 +74,24 @@ router.put('/user/profile', auth, async (req, res) => {
         return res.status(400).json({ error: 'Email is required for update.' });
     }
 
-    const lat = location_lat ? parseFloat(location_lat) : null;
-    const lon = location_lon ? parseFloat(location_lon) : null;
+    // Coordinates are optional on this endpoint, but when supplied they must be
+    // a valid pair. `(0, 0)` is stored as-is only if explicitly sent - the
+    // discovery query treats it as "location not set".
+    const hasLat = location_lat !== undefined && location_lat !== null && location_lat !== '';
+    const hasLon = location_lon !== undefined && location_lon !== null && location_lon !== '';
+
+    if (hasLat !== hasLon) {
+        return res.status(400).json({ error: 'Provide both latitude and longitude, or neither.' });
+    }
+
+    const lat = hasLat ? Number(location_lat) : null;
+    const lon = hasLon ? Number(location_lon) : null;
+
+    if (hasLat && (!isValidLatitude(lat) || !isValidLongitude(lon))) {
+        return res.status(400).json({
+            error: 'Latitude must be between -90 and 90 and longitude between -180 and 180.',
+        });
+    }
 
 
     const client = await pool.connect();

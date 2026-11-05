@@ -1,0 +1,164 @@
+-- 001: provider verification lifecycle + admin platform tables
+--
+-- Applied once by scripts/migrate.js (tracked in schema_migrations).
+-- Every statement is still idempotent so a partially migrated database can be
+-- repaired by re-running the migration runner.
+--
+-- Canonical provider state is `providers.verification_status`
+-- ('pending' | 'under_review' | 'approved' | 'rejected' | 'suspended').
+-- `providers.is_verified` is kept as a compatibility mirror of
+-- verification_status = 'approved' by the trigger below.
+
+-- ---------------------------------------------------------------------------
+-- users: record when the email was verified and why an account was suspended
+-- ---------------------------------------------------------------------------
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at timestamp with time zone;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS status_reason text;
+
+-- ---------------------------------------------------------------------------
+-- services: slugs (stable public identifiers) + soft deactivation
+-- ---------------------------------------------------------------------------
+ALTER TABLE services ADD COLUMN IF NOT EXISTS slug character varying(120);
+ALTER TABLE services ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
+
+UPDATE services
+SET slug = trim(both '-' from lower(regexp_replace(name, '[^a-zA-Z0-9]+', '-', 'g')))
+WHERE slug IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_services_slug ON services USING btree (slug);
+CREATE INDEX IF NOT EXISTS idx_services_active ON services USING btree (is_active);
+
+-- ---------------------------------------------------------------------------
+-- providers: verification lifecycle
+-- ---------------------------------------------------------------------------
+ALTER TABLE providers ADD COLUMN IF NOT EXISTS verification_status character varying(20) NOT NULL DEFAULT 'pending';
+ALTER TABLE providers ADD COLUMN IF NOT EXISTS verification_notes text;
+ALTER TABLE providers ADD COLUMN IF NOT EXISTS rejection_reason text;
+ALTER TABLE providers ADD COLUMN IF NOT EXISTS suspended_reason text;
+ALTER TABLE providers ADD COLUMN IF NOT EXISTS verified_at timestamp with time zone;
+ALTER TABLE providers ADD COLUMN IF NOT EXISTS verified_by integer;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'providers_verification_status_check'
+    ) THEN
+        ALTER TABLE providers
+            ADD CONSTRAINT providers_verification_status_check
+            CHECK (verification_status IN ('pending', 'under_review', 'approved', 'rejected', 'suspended'));
+    END IF;
+END
+$$;
+
+-- Backfill: the legacy boolean is the only source of truth for old rows.
+UPDATE providers
+SET verification_status = 'approved'
+WHERE is_verified = TRUE AND verification_status <> 'approved';
+
+UPDATE providers
+SET is_verified = (verification_status = 'approved');
+
+-- Keep the legacy boolean and the lifecycle status consistent even when an
+-- older client only sends `is_verified`.
+CREATE OR REPLACE FUNCTION sync_provider_verification_status() RETURNS trigger AS $$
+BEGIN
+    IF NEW.verification_status IS DISTINCT FROM OLD.verification_status THEN
+        NEW.is_verified := (NEW.verification_status = 'approved');
+    ELSIF NEW.is_verified IS DISTINCT FROM OLD.is_verified THEN
+        IF NEW.is_verified THEN
+            NEW.verification_status := 'approved';
+        ELSIF NEW.verification_status = 'approved' THEN
+            NEW.verification_status := 'pending';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_sync_provider_verification ON providers;
+CREATE TRIGGER trg_sync_provider_verification
+    BEFORE UPDATE ON providers
+    FOR EACH ROW EXECUTE FUNCTION sync_provider_verification_status();
+
+CREATE INDEX IF NOT EXISTS idx_providers_verification_status
+    ON providers USING btree (verification_status);
+CREATE INDEX IF NOT EXISTS idx_providers_location
+    ON providers USING btree (location_lat, location_lon);
+
+-- ---------------------------------------------------------------------------
+-- reviews: moderation (hidden reviews never count towards provider ratings)
+-- ---------------------------------------------------------------------------
+ALTER TABLE reviews ADD COLUMN IF NOT EXISTS is_hidden boolean NOT NULL DEFAULT false;
+ALTER TABLE reviews ADD COLUMN IF NOT EXISTS moderation_reason text;
+ALTER TABLE reviews ADD COLUMN IF NOT EXISTS moderated_by integer;
+ALTER TABLE reviews ADD COLUMN IF NOT EXISTS moderated_at timestamp with time zone;
+
+CREATE INDEX IF NOT EXISTS idx_reviews_provider_visibility
+    ON reviews USING btree (provider_id, is_hidden);
+
+-- ---------------------------------------------------------------------------
+-- Admin audit trail (append-only from the admin UI)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS admin_audit_logs (
+    id bigint GENERATED BY DEFAULT AS IDENTITY,
+    admin_id integer NOT NULL,
+    action character varying(100) NOT NULL,
+    target_type character varying(50),
+    target_id character varying(64),
+    reason text,
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT admin_audit_logs_pkey PRIMARY KEY (id),
+    CONSTRAINT admin_audit_logs_admin_id_fkey FOREIGN KEY (admin_id) REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created_at
+    ON admin_audit_logs USING btree (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_admin
+    ON admin_audit_logs USING btree (admin_id, created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Platform settings (non-secret operational knobs only)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS platform_settings (
+    key character varying(100) NOT NULL,
+    value text NOT NULL,
+    updated_by integer,
+    updated_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT platform_settings_pkey PRIMARY KEY (key)
+);
+
+INSERT INTO platform_settings (key, value) VALUES
+    ('default_search_radius_km', '10'),
+    ('max_search_radius_km', '50'),
+    ('provider_approval_policy', 'manual'),
+    ('booking_allow_new_bookings', 'true'),
+    ('notifications_email_enabled', 'true'),
+    ('service_availability_enabled', 'true')
+ON CONFLICT (key) DO NOTHING;
+
+-- ---------------------------------------------------------------------------
+-- Booking status history (written by customer/provider/admin status changes)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS booking_status_history (
+    id bigint GENERATED BY DEFAULT AS IDENTITY,
+    booking_id integer NOT NULL,
+    status character varying(50) NOT NULL,
+    changed_by integer,
+    changed_by_role character varying(20),
+    note text,
+    created_at timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT booking_status_history_pkey PRIMARY KEY (id),
+    CONSTRAINT booking_status_history_booking_id_fkey
+        FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_booking_status_history_booking
+    ON booking_status_history USING btree (booking_id, created_at);
+
+-- ---------------------------------------------------------------------------
+-- Query indexes used by admin listings
+-- ---------------------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_users_role_status ON users USING btree (role, status);
+CREATE INDEX IF NOT EXISTS idx_bookings_status_created
+    ON bookings USING btree (booking_status, created_at DESC);

@@ -1,6 +1,6 @@
 // frontend/src/App.js
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 // --- Context ---
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -15,7 +15,8 @@ import {
     LoginPage, 
     RegisterPage, 
     ForgotPasswordPage, 
-    ProviderSetupPage 
+    ProviderSetupPage,
+    AdminLoginPage
 } from './components/auth/AuthForms';
 
 // --- Feature Pages ---
@@ -35,10 +36,24 @@ import { CustomerDashboard } from './pages/dashboards/CustomerDashboard';
 import { ProviderDashboard } from './pages/dashboards/ProviderDashboard';
 import { AdminDashboard } from './pages/dashboards/AdminDashboard';
 
+const ADMIN_PATHS = {
+    adminLogin: '/admin/login',
+    adminDashboard: '/admin/dashboard',
+};
+
+const pageForPath = (pathname) => {
+    if (pathname === '/admin' || pathname === '/admin/' || pathname === '/admin/login') {
+        return 'adminLogin';
+    }
+    if (pathname === '/admin/dashboard') {
+        return 'adminDashboard';
+    }
+    return 'home';
+};
 
 const AppContent = () => {
     // pageData is used to pass initial state/props for transitions (e.g., primaryServiceId after registration)
-    const [page, setPage] = useState('home');
+    const [page, setPage] = useState(() => pageForPath(window.location.pathname));
     const [pageData, setPageData] = useState(null);
     const [selectedService, setSelectedService] = useState(null);
     const [selectedProvider, setSelectedProvider] = useState(null);
@@ -47,11 +62,27 @@ const AppContent = () => {
     // Auth context hook
     const { loading: authLoading } = useAuth(); 
 
-    const navigate = (pageName, data = null) => {
+    const navigate = useCallback((pageName, data = null) => {
         setPageData(data);
         setPage(pageName);
-        window.scrollTo(0, 0); 
-    };
+        window.scrollTo(0, 0);
+
+        // Keep the URL meaningful for the admin area; everything else stays "/".
+        const nextPath = ADMIN_PATHS[pageName] || '/';
+        if (window.location.pathname !== nextPath) {
+            window.history.pushState({ page: pageName }, '', nextPath);
+        }
+    }, []);
+
+    // Browser back/forward support for the admin URLs.
+    useEffect(() => {
+        const onPopState = () => {
+            setPage(pageForPath(window.location.pathname));
+            window.scrollTo(0, 0);
+        };
+        window.addEventListener('popstate', onPopState);
+        return () => window.removeEventListener('popstate', onPopState);
+    }, []);
 
     const renderPage = () => {
         if (authLoading) {
@@ -105,8 +136,10 @@ const AppContent = () => {
                 return <CustomerDashboard setPage={navigate} />; 
             case 'providerDashboard': 
                 return <ProviderDashboard />;
+            case 'adminLogin':
+                return <AdminLoginPage setPage={navigate} />;
             case 'adminDashboard': 
-                return <AdminDashboard />;
+                return <AdminDashboard setPage={navigate} />;
             default: 
                 return <HomePage 
                     setPage={navigate} 
@@ -116,6 +149,14 @@ const AppContent = () => {
                 />;
         }
     };
+
+    // The admin area has its own chrome (sidebar/top bar) and never shows the
+    // customer/provider header and footer.
+    const isAdminArea = page === 'adminLogin' || page === 'adminDashboard';
+
+    if (isAdminArea) {
+        return <div className="min-h-screen bg-gray-50 font-sans">{renderPage()}</div>;
+    }
     
     return (
         <div className="flex flex-col min-h-screen font-sans bg-gray-50">

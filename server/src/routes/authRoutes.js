@@ -141,7 +141,12 @@ router.post('/verify-otp', otpLimiter, async (req, res) => {
 
         // OTP is valid and not expired, activate the account
         await pool.query(
-            'UPDATE users SET status = $1, otp_code = NULL, otp_expiry = NULL WHERE id = $2',
+            `UPDATE users
+             SET status = $1,
+                 email_verified_at = COALESCE(email_verified_at, CURRENT_TIMESTAMP),
+                 otp_code = NULL,
+                 otp_expiry = NULL
+             WHERE id = $2`,
             ['active', user.id]
         );
 
@@ -151,12 +156,14 @@ router.post('/verify-otp', otpLimiter, async (req, res) => {
         if (user.role === 'provider') {
             await pool.query(
                 'INSERT INTO providers (user_id, display_name, bio, location_lat, location_lon, service_radius_km) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (user_id) DO NOTHING',
-                [user_id, `New Provider ${user_id}`, 'A dedicated service provider.', 0, 0, 10]
+                // No location yet: the provider must set a real service location
+                // during onboarding. (0, 0) is treated as "not set".
+                [user_id, `New Provider ${user_id}`, 'A dedicated service provider.', null, null, 10]
             );
         } else if (user.role === 'customer') {
             await pool.query(
                 'INSERT INTO customer_profiles (user_id, full_name, phone_number, location_lat, location_lon) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_id) DO NOTHING',
-                [user_id, '', null, 0, 0]
+                [user_id, '', null, null, null]
             );
         }
 
@@ -204,23 +211,17 @@ router.post('/login', loginLimiter, async (req, res) => {
             return res.status(401).json({ error: 'Invalid email or password.' });
         }
 
-        // 3. ADMIN ROLE ESCALATION
-        // The configured ADMIN_EMAIL is always treated as an administrator.
-        // NOTE: `email` must be part of the SELECT above for this to work.
-        let effectiveRole = user.role;
-        if (
-            process.env.ADMIN_EMAIL &&
-            user.email.toLowerCase() === process.env.ADMIN_EMAIL.trim().toLowerCase()
-        ) {
-            effectiveRole = 'admin';
-            logger.info('admin_login', { userId: user.id, email: user.email });
-        }
+        // The role always comes from the database. ADMIN_EMAIL is NOT used here:
+        // promoting an account by environment variable at login was a privilege
+        // escalation path. Administrator accounts are created explicitly with
+        // `npm run create-admin` and sign in via /api/v1/admin/login.
+        logger.info('user_login', { userId: user.id, role: user.role });
 
-        // 4. Generate a JWT token
+        // Generate a JWT token
         const payload = {
             user: {
                 id: user.id,
-                role: effectiveRole
+                role: user.role
             }
         };
 
@@ -230,7 +231,7 @@ router.post('/login', loginLimiter, async (req, res) => {
             message: 'Login successful.',
             token,
             user_id: user.id,
-            role: effectiveRole
+            role: user.role
         });
     } catch (err) {
         console.error('Login error:', err);

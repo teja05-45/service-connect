@@ -10,6 +10,7 @@ const multer = require('multer');
 require('dotenv').config();
 
 const pool = require('./src/config/db');
+const { ensureInitialAdmin } = require('./src/services/adminBootstrap');
 const { logger, requestLogger } = require('./src/utils/logger');
 const { uploadsDir } = require('./src/config/upload');
 
@@ -90,7 +91,10 @@ app.use('/api/v1', require('./src/routes/providerRoutes'));
 // 7. Payment & Review Routes
 app.use('/api/v1', require('./src/routes/paymentRoutes'));
 
-// 8. Admin Routes (secured internally by auth + role check)
+// 8. Administrator authentication (separate login, admin-only role check)
+app.use('/api/v1', require('./src/routes/adminAuthRoutes'));
+
+// 9. Admin Routes (secured internally by auth + database-backed role check)
 app.use('/api/v1', require('./src/routes/adminRoutes'));
 
 // --- 404 HANDLER (JSON, after all routes) ---
@@ -164,6 +168,18 @@ let server = null;
 
 const start = () => {
     validateEnvironment();
+
+    // Optional first-run administrator bootstrap. No-op unless ADMIN_EMAIL and
+    // ADMIN_PASSWORD are set AND no administrator exists yet; it never
+    // overwrites credentials on restart.
+    ensureInitialAdmin()
+        .then((result) => {
+            if (result.created) {
+                logger.info('initial_admin_ready', { userId: result.userId, email: result.email });
+            }
+        })
+        .catch((err) => logger.error('initial_admin_bootstrap_failed', { error: err.message }));
+
     server = app.listen(PORT, HOST, () => {
         logger.info('server_started', {
             host: HOST,

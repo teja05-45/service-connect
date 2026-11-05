@@ -1,17 +1,21 @@
 // frontend/src/pages/ServicePages.js
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { ServiceCard, ProviderCard } from '../components/shared/Cards';
-import { Spinner, ErrorMessage,SuccessMessage } from '../components/shared/UI';
+import { Spinner, ErrorMessage, SuccessMessage, ErrorState } from '../components/shared/UI';
 import { BookingModal } from '../components/modals/Modals';
 import { 
     API_BASE_URL, 
-    CURRENCY_SYMBOL, 
     DARK_CYAN_CLASS, 
     DARK_CYAN_HOVER_CLASS,
     DARK_CYAN_TEXT_CLASS,
-    getProfileField
+    SEARCH_RADIUS_OPTIONS,
+    getSavedLocation,
+    formatCoordinates,
+    isValidLatitude,
+    isValidLongitude,
+    requestBrowserLocation
 } from './utils/helpers';
 
 export const AllServicesPage = ({ setPage, setSelectedService, searchParams }) => {
@@ -29,7 +33,7 @@ export const AllServicesPage = ({ setPage, setSelectedService, searchParams }) =
                 // Mock filtering by query (since backend only filters by service ID)
                 if (searchParams?.query) {
                     const query = searchParams.query.toLowerCase();
-                    data = data.filter(s => s.name.toLowerCase().includes(query) || s.description.toLowerCase().includes(query));
+                    data = data.filter(s => s.name.toLowerCase().includes(query) || (s.description || '').toLowerCase().includes(query));
                 }
                 
                 setServices(data || []);
@@ -52,7 +56,7 @@ export const AllServicesPage = ({ setPage, setSelectedService, searchParams }) =
             <a onClick={() => setPage('home')} className="text-blue-600 hover:text-blue-800 font-medium transition mb-8 flex items-center cursor-pointer">&larr; Back to Home</a>
             <h1 className="text-4xl font-bold text-slate-800 mb-4 text-center border-b pb-4">All Available Services</h1>
              {searchParams?.query && (
-                 <p className="text-center text-lg text-gray-600 mb-8">Showing results for: **"{searchParams.query}"**</p>
+                 <p className="text-center text-lg text-gray-600 mb-8">Showing results for: <strong>"{searchParams.query}"</strong></p>
              )}
             {loading && <Spinner />}
             {error && <ErrorMessage message={error} />}
@@ -65,72 +69,317 @@ export const AllServicesPage = ({ setPage, setSelectedService, searchParams }) =
     );
 };
 
+/**
+ * Provider discovery.
+ *
+ * Location rules:
+ *   - a saved profile location is used first,
+ *   - the customer can share the browser location (permission prompt) or enter
+ *     coordinates manually,
+ *   - with no location, approved providers for the category are still listed
+ *     but explicitly labelled as unfiltered - we never pretend (0,0) is real.
+ */
 export const ServiceProvidersPage = ({ service, setPage, setSelectedProvider }) => {
-    const { user, isAuthenticated } = useAuth();
+    const { user, token, isAuthenticated, fetchUserProfile } = useAuth();
+    const savedLocation = isAuthenticated ? getSavedLocation(user) : null;
+
+    const [location, setLocation] = useState(savedLocation);
+    const [locationSource, setLocationSource] = useState(savedLocation ? 'saved' : null);
+    const [manualLat, setManualLat] = useState(savedLocation ? String(savedLocation.lat) : '');
+    const [manualLon, setManualLon] = useState(savedLocation ? String(savedLocation.lon) : '');
+    const [radius, setRadius] = useState(10);
+    const [maxRadius, setMaxRadius] = useState(50);
+    const [locating, setLocating] = useState(false);
+    const [savingLocation, setSavingLocation] = useState(false);
+    const [locationError, setLocationError] = useState('');
+    const [locationNotice, setLocationNotice] = useState('');
+
     const [providers, setProviders] = useState([]);
+    const [searchMeta, setSearchMeta] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
-    
-    // Get customer default location from profile
-    const lat = isAuthenticated ? getProfileField(user, 'location_lat', null) : null;
-    const lon = isAuthenticated ? getProfileField(user, 'location_lon', null) : null;
-    
-    const locationMessage = lat && lon ? `Searching within your default location: (${lat}, ${lon})` : 'Using mock location (0, 0). Please update your profile.';
 
+    // The profile is fetched asynchronously by AuthContext; adopt a saved
+    // location that arrives after the first render (once, only if nothing is set).
     useEffect(() => {
+        if (location || !savedLocation) return;
+        setLocation(savedLocation);
+        setLocationSource('saved');
+        setManualLat(String(savedLocation.lat));
+        setManualLon(String(savedLocation.lon));
+    }, [savedLocation, location]);
+
+    const fetchProviders = useCallback(async () => {
         if (!service || !service.id) {
-            setError('No service selected. Returning to service list.');
-            setTimeout(() => setPage('allServices'), 2000);
+            setError('No service selected. Please go back and choose a service category.');
             setLoading(false);
             return;
         }
 
-        const fetchProviders = async () => {
-            // Use mock coordinates if user is not authenticated or coordinates are missing
-            const searchLat = lat || 0; 
-            const searchLon = lon || 0; 
-            
-            try {
-                // Modified endpoint to include lat/lon for distance filtering on backend
-                const res = await fetch(`${API_BASE_URL}/providers?service_id=${service.id}&lat=${searchLat}&lon=${searchLon}`);
-                if (!res.ok) throw new Error('Failed to fetch providers');
-                const data = await res.json();
-                setProviders(data.providers || []);
-            } catch (err) {
-                setError(err.message);
-            } finally {
-                setLoading(false);
+        setLoading(true);
+        setError('');
+        try {
+            const params = new URLSearchParams({
+                service_id: String(service.id),
+                radius: String(radius),
+            });
+            if (location) {
+                params.set('lat', String(location.lat));
+                params.set('lon', String(location.lon));
             }
-        };
-        fetchProviders();
-    }, [service, setPage, lat, lon, isAuthenticated]);
 
+            const res = await fetch(`${API_BASE_URL}/providers?${params.toString()}`);
+            const body = await res.json().catch(() => ({}));
+
+            if (!res.ok) {
+                throw new Error(body.error || `Provider search failed (HTTP ${res.status}).`);
+            }
+
+            setProviders(Array.isArray(body.providers) ? body.providers : []);
+            setSearchMeta(body.search || null);
+            if (body.search?.max_radius_km) setMaxRadius(body.search.max_radius_km);
+        } catch (err) {
+            setProviders([]);
+            setError(err.message || 'Could not load providers. Check that the API is running and try again.');
+        } finally {
+            setLoading(false);
+        }
+    }, [service, radius, location]);
+
+    useEffect(() => {
+        fetchProviders();
+    }, [fetchProviders]);
+
+    const useBrowserLocation = async () => {
+        setLocationError('');
+        setLocationNotice('');
+        setLocating(true);
+        try {
+            const next = await requestBrowserLocation();
+            setLocation({ lat: next.lat, lon: next.lon });
+            setLocationSource('browser');
+            setManualLat(next.lat.toFixed(6));
+            setManualLon(next.lon.toFixed(6));
+            setLocationNotice(
+                next.accuracy_m
+                    ? `Using your browser location (accurate to about ${Math.round(next.accuracy_m)} m). You can save it to your profile.`
+                    : 'Using your browser location. You can save it to your profile.'
+            );
+        } catch (err) {
+            setLocationError(err.message);
+        } finally {
+            setLocating(false);
+        }
+    };
+
+    const applyManualLocation = () => {
+        setLocationError('');
+        setLocationNotice('');
+        const lat = Number(manualLat);
+        const lon = Number(manualLon);
+
+        if (!isValidLatitude(lat)) {
+            setLocationError('Latitude must be a number between -90 and 90.');
+            return;
+        }
+        if (!isValidLongitude(lon)) {
+            setLocationError('Longitude must be a number between -180 and 180.');
+            return;
+        }
+        if (lat === 0 && lon === 0) {
+            setLocationError('(0, 0) is not a real location. Enter your actual latitude and longitude.');
+            return;
+        }
+
+        setLocation({ lat, lon });
+        setLocationSource('manual');
+        setLocationNotice('Using the location you entered.');
+    };
+
+    const saveLocationToProfile = async () => {
+        if (!token || !location) return;
+        setSavingLocation(true);
+        setLocationError('');
+        setLocationNotice('');
+        try {
+            const res = await fetch(`${API_BASE_URL}/user/profile`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', 'x-auth-token': token },
+                body: JSON.stringify({
+                    email: user.email,
+                    location_lat: location.lat,
+                    location_lon: location.lon,
+                }),
+            });
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(body.error || 'Could not save your location.');
+
+            if (fetchUserProfile) await fetchUserProfile(token);
+            setLocationSource('saved');
+            setLocationNotice('Location saved to your profile.');
+        } catch (err) {
+            setLocationError(err.message);
+        } finally {
+            setSavingLocation(false);
+        }
+    };
+
+    const clearLocation = () => {
+        setLocation(null);
+        setLocationSource(null);
+        setLocationNotice('');
+        setLocationError('');
+        setManualLat('');
+        setManualLon('');
+    };
 
     const handleProviderClick = (provider) => {
         setSelectedProvider(provider);
         setPage('providerDetail');
     };
 
+    const radiusChoices = [...new Set([...SEARCH_RADIUS_OPTIONS, radius, maxRadius])]
+        .filter((value) => value <= maxRadius)
+        .sort((a, b) => a - b);
+
     return (
         <div className="container mx-auto px-6 py-16">
             <a onClick={() => setPage('allServices')} className="text-blue-600 hover:text-blue-800 font-medium transition mb-8 flex items-center cursor-pointer">&larr; Back to Services</a>
             <h1 className="text-4xl font-extrabold text-slate-800 mb-2">{service?.name || "Service Providers"}</h1>
-            <p className="text-lg text-gray-600 mb-4 max-w-3xl">{service?.description}</p>
-            <p className="text-sm text-blue-500 font-medium mb-8">{locationMessage}</p>
-            
-            {loading && <Spinner />}
-            {error && <ErrorMessage message={error} />}
-            <div className="space-y-6">
-                {!loading && providers.length > 0 ? (
-                    providers.map(provider => (
-                        <ProviderCard key={provider.id} provider={provider} onClick={handleProviderClick} />
-                    ))
-                ) : (
-                    !loading && !error && <p className="text-center text-gray-500 bg-gray-100 p-10 rounded-xl shadow-inner">
-                        No verified providers found for this service near your location.
-                    </p>
-                )}
+            <p className="text-lg text-gray-600 mb-6 max-w-3xl">{service?.description}</p>
+
+            {/* --- Search location panel --- */}
+            <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-5 mb-8 max-w-4xl">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                        <h2 className="text-lg font-bold text-slate-800">Search location</h2>
+                        <p className="text-sm text-gray-600 mt-1">
+                            {location
+                                ? `Searching within ${radius} km of ${formatCoordinates(location)}${locationSource === 'saved' ? ' (saved location)' : ''}.`
+                                : 'No location selected. Approved providers are listed without a distance filter.'}
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <label htmlFor="radius" className="text-sm font-semibold text-gray-700">Radius</label>
+                        <select
+                            id="radius"
+                            value={radius}
+                            onChange={(e) => setRadius(Number(e.target.value))}
+                            className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                        >
+                            {radiusChoices.map((value) => (
+                                <option key={value} value={value}>{value} km</option>
+                            ))}
+                        </select>
+                    </div>
+                </div>
+
+                <div className="flex flex-wrap gap-3 mt-4">
+                    <button
+                        type="button"
+                        onClick={useBrowserLocation}
+                        disabled={locating}
+                        className={`${DARK_CYAN_CLASS} text-white text-sm font-semibold px-4 py-2 rounded-lg ${DARK_CYAN_HOVER_CLASS} disabled:bg-gray-400`}
+                    >
+                        {locating ? 'Reading location…' : 'Use my current location'}
+                    </button>
+                    {isAuthenticated && location && locationSource !== 'saved' && (
+                        <button
+                            type="button"
+                            onClick={saveLocationToProfile}
+                            disabled={savingLocation}
+                            className="bg-white border border-cyan-600 text-cyan-700 text-sm font-semibold px-4 py-2 rounded-lg hover:bg-cyan-50 disabled:opacity-60"
+                        >
+                            {savingLocation ? 'Saving…' : 'Save to my profile'}
+                        </button>
+                    )}
+                    {location && (
+                        <button
+                            type="button"
+                            onClick={clearLocation}
+                            className="text-sm font-semibold text-gray-600 hover:text-red-600 px-2 py-2"
+                        >
+                            Clear location
+                        </button>
+                    )}
+                </div>
+
+                <div className="grid sm:grid-cols-[1fr_1fr_auto] gap-3 mt-4 items-end">
+                    <div>
+                        <label htmlFor="manual-lat" className="block text-xs font-semibold text-gray-600 uppercase">Latitude</label>
+                        <input
+                            id="manual-lat"
+                            type="number"
+                            step="any"
+                            value={manualLat}
+                            onChange={(e) => setManualLat(e.target.value)}
+                            placeholder="e.g. 16.17000"
+                            className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                        />
+                    </div>
+                    <div>
+                        <label htmlFor="manual-lon" className="block text-xs font-semibold text-gray-600 uppercase">Longitude</label>
+                        <input
+                            id="manual-lon"
+                            type="number"
+                            step="any"
+                            value={manualLon}
+                            onChange={(e) => setManualLon(e.target.value)}
+                            placeholder="e.g. 81.12999"
+                            className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                        />
+                    </div>
+                    <button
+                        type="button"
+                        onClick={applyManualLocation}
+                        className="bg-slate-800 text-white text-sm font-semibold px-4 py-2 rounded-lg hover:bg-slate-900"
+                    >
+                        Apply location
+                    </button>
+                </div>
+
+                {locationError && <p className="mt-3 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{locationError}</p>}
+                {locationNotice && <p className="mt-3 text-sm font-medium text-green-700 bg-green-50 border border-green-200 rounded-lg p-3">{locationNotice}</p>}
+                <p className="mt-3 text-xs text-gray-500">
+                    Only your search coordinates are sent. Your exact address is never shown to providers in search results.
+                </p>
             </div>
+
+            {loading && <Spinner />}
+            {!loading && error && (
+                <ErrorState
+                    title="Provider search failed"
+                    message={error}
+                    onRetry={fetchProviders}
+                />
+            )}
+
+            {!loading && !error && (
+                <>
+                    {searchMeta && (
+                        <p className="text-sm text-gray-500 mb-4">
+                            {providers.length} approved provider{providers.length === 1 ? '' : 's'}
+                            {location ? ` within ${searchMeta.radius_km} km` : ' (no distance filter)'}.
+                        </p>
+                    )}
+                    <div className="space-y-6">
+                        {providers.length > 0 ? (
+                            providers.map(provider => (
+                                <ProviderCard key={provider.id} provider={provider} onClick={handleProviderClick} />
+                            ))
+                        ) : (
+                            <div className="text-center text-gray-600 bg-gray-100 p-10 rounded-xl shadow-inner">
+                                <p className="text-lg font-semibold mb-2">No approved providers matched this search.</p>
+                                <p className="text-sm">
+                                    {location
+                                        ? `There are no approved providers for this service within ${radius} km of your location. Try a larger radius or a different location.`
+                                        : 'There are no approved providers for this service yet. Set a location to rank the nearest providers once they are available.'}
+                                </p>
+                            </div>
+                        )}
+                    </div>
+                </>
+            )}
         </div>
     );
 };
@@ -142,11 +391,9 @@ export const ProviderDetailPage = ({ provider, service, setPage }) => {
     const mockServiceName = service?.name || 'Service Professional';
 
     if (!provider) return <ErrorMessage message="No provider selected." />;
-    
 
     const handleRequestService = () => {
         if (!isAuthenticated || user?.role !== 'customer') {
-            console.log("[UI Notification] Please log in as a customer to request a service.");
             setPage('login');
         } else {
             setIsBookingModalOpen(true);
@@ -157,7 +404,11 @@ export const ProviderDetailPage = ({ provider, service, setPage }) => {
         setIsBookingModalOpen(false);
         setPage('customerDashboard');
     };
-    
+
+    const serviceArea = provider.service_radius_km
+        ? `Within ${provider.service_radius_km} km of the provider's service location`
+        : 'Service area not specified';
+
     return (
         <div className="container mx-auto px-6 py-16">
             <button onClick={() => setPage('serviceProviders')} className="text-blue-600 hover:text-blue-800 font-medium transition mb-8 flex items-center">&larr; Back to Providers</button>
@@ -202,9 +453,13 @@ export const ProviderDetailPage = ({ provider, service, setPage }) => {
                         
                         <h3 className="text-xl font-bold text-slate-700 mb-3">Service Details</h3>
                         <ul className="list-disc list-inside text-gray-700 space-y-2">
-                            <li><span className="font-semibold">Primary Service:</span> {mockServiceName}</li>
-                            <li><span className="font-semibold">Service Area:</span> {provider.service_radius_km || 10} km radius from location ({provider.location_lat}, {provider.location_lon})</li>
-                            <li><span className="font-semibold">Avg Rate:</span> {CURRENCY_SYMBOL}400/hr (Estimated)</li>
+                            <li><span className="font-semibold">Service:</span> {mockServiceName}</li>
+                            <li><span className="font-semibold">Other services:</span> {(provider.services || []).length > 0 ? provider.services.join(', ') : mockServiceName}</li>
+                            <li><span className="font-semibold">Service area:</span> {serviceArea}</li>
+                            <li><span className="font-semibold">Pricing:</span> The provider sends a quote before any work starts.</li>
+                            {provider.distance_km !== null && provider.distance_km !== undefined && (
+                                <li><span className="font-semibold">Distance:</span> {provider.distance_km} km from your search location</li>
+                            )}
                         </ul>
                     </div>
                 </div>

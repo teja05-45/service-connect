@@ -4,6 +4,8 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
 const auth = require('../../middleware/auth');
+const { isValidLatitude, isValidLongitude, parseProviderRadius } = require('../utils/geo');
+const { getSettings } = require('../services/settings');
 
 // NOTE: sendEmail is not strictly needed for the routes below but is included
 // for consistency if future routes require it.
@@ -127,13 +129,42 @@ router.post('/provider/profile', auth, async (req, res) => {
         return res.status(400).json({ error: 'Payout UPI ID is required.' });
     }
 
+    // Location is required for discovery: without a real coordinate the provider
+    // cannot appear in distance searches. (0, 0) is rejected as "not a location".
+    const lat = Number(location_lat);
+    const lon = Number(location_lon);
+    if (location_lat === undefined || location_lat === null || location_lat === '' || !isValidLatitude(lat)) {
+        return res.status(400).json({ error: 'A valid service latitude between -90 and 90 is required.' });
+    }
+    if (location_lon === undefined || location_lon === null || location_lon === '' || !isValidLongitude(lon)) {
+        return res.status(400).json({ error: 'A valid service longitude between -180 and 180 is required.' });
+    }
+    if (lat === 0 && lon === 0) {
+        return res.status(400).json({ error: 'Please provide your real service location (0, 0 is not valid).' });
+    }
+
+    const radiusKm = parseProviderRadius(service_radius_km, 10);
+    const uniqueServiceIds = [...new Set(service_ids.map((id) => Number(id)).filter(Number.isInteger))];
+    if (uniqueServiceIds.length === 0) {
+        return res.status(400).json({ error: 'At least one valid service ID is required.' });
+    }
+
     const client = await pool.connect();
 
     try {
         await client.query('BEGIN');
 
+        const servicesExist = await client.query(
+            'SELECT id FROM services WHERE id = ANY($1::int[]) AND is_active = TRUE',
+            [uniqueServiceIds]
+        );
+        if (servicesExist.rowCount !== uniqueServiceIds.length) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'One or more selected services do not exist or are inactive.' });
+        }
+
         let updateFields = 'display_name = $1, bio = $2, location_lat = $3, location_lon = $4, service_radius_km = $5, updated_at = CURRENT_TIMESTAMP';
-        let updateParams = [display_name, bio, location_lat, location_lon, service_radius_km];
+        let updateParams = [display_name, bio, lat, lon, radiusKm];
 
         if (payout_upi_id !== undefined) {
              updateFields += `, payout_upi_id = $${updateParams.length + 1}`;
@@ -145,7 +176,7 @@ router.post('/provider/profile', auth, async (req, res) => {
             UPDATE providers
             SET ${updateFields}
             WHERE user_id = $${updateParams.length}
-            RETURNING id;
+            RETURNING id, verification_status;
         `;
         const result = await client.query(updateQuery, updateParams);
 
@@ -157,16 +188,34 @@ router.post('/provider/profile', auth, async (req, res) => {
 
         await client.query('DELETE FROM provider_services WHERE provider_id = $1', [provider_id]);
 
-        const serviceInserts = service_ids.map(service_id =>
+        const serviceInserts = uniqueServiceIds.map(service_id =>
             client.query('INSERT INTO provider_services (provider_id, service_id) VALUES ($1, $2)', [provider_id, service_id])
         );
         await Promise.all(serviceInserts);
+
+        // Optional auto-approval policy (default is manual review). Never
+        // overrides a rejected or suspended provider.
+        let verificationStatus = result.rows[0].verification_status;
+        if (['pending', 'under_review'].includes(verificationStatus)) {
+            const settings = await getSettings(client);
+            if (settings.provider_approval_policy === 'auto') {
+                const approved = await client.query(
+                    `UPDATE providers
+                     SET verification_status = 'approved', verified_at = CURRENT_TIMESTAMP
+                     WHERE id = $1
+                     RETURNING verification_status`,
+                    [provider_id]
+                );
+                verificationStatus = approved.rows[0].verification_status;
+            }
+        }
 
         await client.query('COMMIT');
 
         res.status(200).json({
             message: 'Provider profile updated successfully.',
-            provider_id: provider_id
+            provider_id: provider_id,
+            verification_status: verificationStatus
         });
 
     } catch (err) {

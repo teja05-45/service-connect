@@ -1,5 +1,5 @@
 import React from 'react';
-import { DARK_CYAN_CLASS, DARK_CYAN_HOVER_CLASS,DARK_CYAN_TEXT_CLASS,CURRENCY_SYMBOL } from '../../pages/utils/helpers';
+import { DARK_CYAN_CLASS, DARK_CYAN_HOVER_CLASS,DARK_CYAN_TEXT_CLASS,CURRENCY_SYMBOL, formatDistance } from '../../pages/utils/helpers';
 
 export const ServiceCard = ({ service, onClick }) => (
   <div
@@ -39,6 +39,11 @@ export const ProviderCard = ({ provider, onClick }) => (
                     {provider.is_verified && <span title="Verified Professional" className="bg-green-100 text-green-800 text-xs font-semibold px-1 py-0.5 rounded-full border border-green-300">✓</span>}
                 </div>
                 <p className="text-xs font-semibold text-gray-500">{provider.service_name || 'Service Expert'}</p>
+                {formatDistance(provider.distance_km) && (
+                    <p className="text-xs text-cyan-700 font-semibold mt-1">
+                        📍 {formatDistance(provider.distance_km)} away
+                    </p>
+                )}
             </div>
         </div>
 

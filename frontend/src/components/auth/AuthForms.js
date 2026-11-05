@@ -1,6 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { API_BASE_URL, DARK_CYAN_CLASS, DARK_CYAN_HOVER_CLASS } from '../../pages/utils/helpers';
+import {
+    API_BASE_URL,
+    isValidLatitude,
+    isValidLongitude,
+    requestBrowserLocation,
+} from '../../pages/utils/helpers';
 import { ErrorMessage, SuccessMessage } from '../shared/UI';
 
 
@@ -307,12 +312,92 @@ export const ForgotPasswordPage = ({ setPage }) => {
     );
 };
 
+// --- Administrator Login (separate interface) ---
+export const AdminLoginPage = ({ setPage }) => {
+    const { adminLogin } = useAuth();
+    const [error, setError] = useState('');
+    const [loading, setLoading] = useState(false);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setError('');
+        setLoading(true);
+        const result = await adminLogin(e.target.email.value, e.target.password.value);
+        setLoading(false);
+
+        if (result.success) {
+            setPage('adminDashboard');
+        } else {
+            setError(result.message || 'Invalid administrator credentials.');
+        }
+    };
+
+    return (
+        <div className="min-h-screen bg-slate-900 flex items-center justify-center px-4 py-12">
+            <div className="w-full max-w-md">
+                <div className="text-center mb-8">
+                    <p className="text-cyan-400 font-bold tracking-widest text-xs uppercase">Service Connect</p>
+                    <h1 className="text-3xl font-extrabold text-white mt-2">Administrator sign in</h1>
+                    <p className="text-slate-400 text-sm mt-2">
+                        This area is restricted to platform administrators. Customer and provider accounts cannot sign in here.
+                    </p>
+                </div>
+                <div className="bg-white py-8 px-6 shadow-2xl rounded-xl sm:px-10 border border-slate-700">
+                    <form className="space-y-5" onSubmit={handleSubmit}>
+                        <div>
+                            <label htmlFor="admin-email" className="block text-sm font-semibold text-gray-700">Administrator email</label>
+                            <input id="admin-email" name="email" type="email" autoComplete="username" required
+                                className="mt-1 block w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-slate-500 focus:border-slate-500" />
+                        </div>
+                        <div>
+                            <label htmlFor="admin-password" className="block text-sm font-semibold text-gray-700">Password</label>
+                            <input id="admin-password" name="password" type="password" autoComplete="current-password" required
+                                className="mt-1 block w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-slate-500 focus:border-slate-500" />
+                        </div>
+                        {error && <ErrorMessage message={error} />}
+                        <button type="submit" disabled={loading}
+                            className="w-full py-3 rounded-lg font-bold text-white bg-slate-900 hover:bg-slate-800 transition disabled:bg-gray-400">
+                            {loading ? 'Signing in...' : 'Sign in as administrator'}
+                        </button>
+                    </form>
+                    <button
+                        type="button"
+                        onClick={() => setPage('home')}
+                        className="mt-5 w-full text-center text-sm font-medium text-slate-600 hover:text-slate-900"
+                    >
+                        &larr; Back to Service Connect
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 // --- Provider Setup Page ---
 export const ProviderSetupPage = ({ setPage, pageData }) => {
     const { token } = useAuth();
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
     const [loading, setLoading] = useState(false);
+    const [latitude, setLatitude] = useState('');
+    const [longitude, setLongitude] = useState('');
+    const [radiusKm, setRadiusKm] = useState('10');
+    const [locating, setLocating] = useState(false);
+    const [locationError, setLocationError] = useState('');
+
+    const useBrowserLocation = async () => {
+        setLocationError('');
+        setLocating(true);
+        try {
+            const next = await requestBrowserLocation();
+            setLatitude(next.lat.toFixed(6));
+            setLongitude(next.lon.toFixed(6));
+        } catch (err) {
+            setLocationError(err.message);
+        } finally {
+            setLocating(false);
+        }
+    };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -325,12 +410,27 @@ export const ProviderSetupPage = ({ setPage, pageData }) => {
              return;
         }
 
+        const lat = Number(latitude);
+        const lon = Number(longitude);
+        const radius = Number(radiusKm);
+
+        if (!isValidLatitude(lat) || !isValidLongitude(lon) || (lat === 0 && lon === 0)) {
+            setLocationError('Enter a real service location: latitude -90..90, longitude -180..180, (0,0) is not allowed.');
+            setLoading(false);
+            return;
+        }
+        if (!Number.isInteger(radius) || radius < 1 || radius > 100) {
+            setLocationError('Service radius must be a whole number between 1 and 100 km.');
+            setLoading(false);
+            return;
+        }
+
         const profileData = {
             display_name: e.target.display_name.value,
             bio: e.target.bio.value,
-            location_lat: parseFloat(e.target.lat.value), 
-            location_lon: parseFloat(e.target.lon.value),
-            service_radius_km: parseInt(e.target.radius.value, 10),
+            location_lat: lat,
+            location_lon: lon,
+            service_radius_km: radius,
             service_ids: [pageData.primaryServiceId],
             payout_upi_id: e.target.payout_upi_id.value
         };
@@ -371,20 +471,32 @@ export const ProviderSetupPage = ({ setPage, pageData }) => {
                     <textarea id="bio" name="bio" rows="3" required className="mt-1 block w-full px-4 py-3 border border-gray-300 rounded-lg" placeholder="Describe your services and experience (Max 250 chars)..."></textarea>
                 </div>
                 <h3 className="text-lg font-bold text-slate-700 border-b pb-2">Service Location</h3>
+                <p className="text-xs text-gray-500">
+                    Customers only see your profile when they search within this radius. Your exact address is never shown in search results.
+                </p>
+                <button
+                    type="button"
+                    onClick={useBrowserLocation}
+                    disabled={locating}
+                    className="text-sm font-semibold text-cyan-700 border border-cyan-600 rounded-lg px-4 py-2 hover:bg-cyan-50 disabled:opacity-60"
+                >
+                    {locating ? 'Reading location…' : 'Use my current location'}
+                </button>
                 <div className="grid grid-cols-3 gap-4">
                     <div>
-                        <label htmlFor="lat" className="block text-sm font-semibold text-gray-700">Location Latitude</label>
-                        <input id="lat" name="lat" type="number" step="any" defaultValue="12.9716" required className="mt-1 block w-full px-4 py-3 border border-gray-300 rounded-lg" />
+                        <label htmlFor="lat" className="block text-sm font-semibold text-gray-700">Service Latitude</label>
+                        <input id="lat" name="lat" type="number" step="any" value={latitude} onChange={(e) => setLatitude(e.target.value)} placeholder="e.g. 16.17000" required className="mt-1 block w-full px-4 py-3 border border-gray-300 rounded-lg" />
                     </div>
                     <div>
-                        <label htmlFor="lon" className="block text-sm font-semibold text-gray-700">Location Longitude</label>
-                        <input id="lon" name="lon" type="number" step="any" defaultValue="77.5946" required className="mt-1 block w-full px-4 py-3 border border-gray-300 rounded-lg" />
+                        <label htmlFor="lon" className="block text-sm font-semibold text-gray-700">Service Longitude</label>
+                        <input id="lon" name="lon" type="number" step="any" value={longitude} onChange={(e) => setLongitude(e.target.value)} placeholder="e.g. 81.12999" required className="mt-1 block w-full px-4 py-3 border border-gray-300 rounded-lg" />
                     </div>
                     <div>
                         <label htmlFor="radius" className="block text-sm font-semibold text-gray-700">Service Radius (km)</label>
-                        <input id="radius" name="radius" type="number" defaultValue="10" required className="mt-1 block w-full px-4 py-3 border border-gray-300 rounded-lg" />
+                        <input id="radius" name="radius" type="number" min="1" max="100" value={radiusKm} onChange={(e) => setRadiusKm(e.target.value)} required className="mt-1 block w-full px-4 py-3 border border-gray-300 rounded-lg" />
                     </div>
                 </div>
+                {locationError && <ErrorMessage message={locationError} />}
                 <h3 className="text-lg font-bold text-slate-700 border-b pb-2">Payout Details</h3>
                 <div>
                     <label htmlFor="payout_upi_id" className="block text-sm font-semibold text-gray-700">Primary Payout UPI ID / Bank Details</label>

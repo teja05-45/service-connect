@@ -118,6 +118,28 @@ export const AuthProvider = ({ children }) => {
         }
     };
 
+    // Separate administrator sign-in. Only /admin/login accepts admin accounts;
+    // the general login endpoint no longer promotes accounts by email.
+    const adminLogin = async (email, password) => {
+        try {
+            const response = await fetch(`${API_BASE_URL}/admin/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password }),
+            });
+            const data = await response.json();
+            if (response.ok) {
+                localStorage.setItem('token', data.token);
+                setToken(data.token);
+                await fetchUserProfile(data.token);
+                return { success: true, role: 'admin' };
+            }
+            return { success: false, message: data.error || 'Administrator login failed.' };
+        } catch (error) {
+            return { success: false, message: 'Network error. Please try again.' };
+        }
+    };
+
     const register = async (email, password, role) => {
          try {
             const response = await fetch(`${API_BASE_URL}/auth/register`, {
@@ -196,11 +218,13 @@ export const AuthProvider = ({ children }) => {
         user, 
         token, 
         login, 
+        adminLogin,
         logout, 
         register, 
         loading, 
         isAuthenticated: !!user, 
         fetchUserProfile, 
+        refreshUser: () => fetchUserProfile(token),
         sendOtp, 
         resetPassword,
         verifyOtp, 

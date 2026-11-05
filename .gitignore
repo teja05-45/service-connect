@@ -27,3 +27,7 @@ Thumbs.db
 
 # Local scratch (schema extraction helpers etc.)
 tmp_schema/
+
+# Legacy database dumps (may contain personal data or password hashes)
+data_base.sql
+*.dump
